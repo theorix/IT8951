@@ -19,7 +19,7 @@ from posix.ioctl cimport ioctl
 from libc.string cimport memset
 from time import time, sleep
 
-import RPi.GPIO as GPIO
+import gpiozero
 
 from .constants import Pins, PixelModes
 
@@ -43,6 +43,7 @@ cdef class SPI:
     cdef int fd, _mode, _bits_per_word, data_hz, cmd_hz, delay
     cdef int max_block_size
     cdef float timeout_secs
+    cdef object pin_hrdy, pin_reset, pin_cs
 
     cdef unsigned char [:] write_buf, read_buf
 
@@ -66,18 +67,24 @@ cdef class SPI:
 
         self.delay = 0
 
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
-        GPIO.setup(Pins.HRDY, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-        GPIO.setup(Pins.RESET, GPIO.OUT, initial=GPIO.HIGH)
+        self.pin_hrdy = gpiozero.Button(Pins.HRDY, pull_up = False)
+        self.pin_reset = gpiozero.LED(Pins.RESET)
+        self.pin_cs = gpiozero.LED(Pins.CS)
 
-        # reset
-        GPIO.output(Pins.RESET, GPIO.LOW)
-        sleep(0.1)
-        GPIO.output(Pins.RESET, GPIO.HIGH)
+        self.pin_cs.on()
+        self.pin_reset.on()
+        sleep(0.2)
+        self.pin_reset.off()
+        sleep(0.01)
+        self.pin_reset.on()
+        sleep(0.2)
 
     def __del__(self):
-        GPIO.cleanup([Pins.HRDY, Pins.RESET])
+        self.pin_cs.off()
+        self.pin_reset.off()
+        self.pin_hrdy.close()
+        self.pin_reset.close()
+        self.pin_cs.close()
         if self.fd != -1:
             os.close(self.fd)
 
@@ -94,7 +101,7 @@ cdef class SPI:
 
         # make sure the max block size isn't absurdly large
         if self.max_block_size > 2**16:
-            self.max_block_size == 2**16
+            self.max_block_size = 2**16
 
     ##### methods to communicate with the device
 
@@ -103,7 +110,7 @@ cdef class SPI:
         Wait for the device's ready pin to be set
         '''
         start = time()
-        while not GPIO.input(Pins.HRDY):
+        while not self.pin_hrdy.value:
             if time()-start > self.timeout_secs:
                 raise TimeoutError("Timed out waiting for display to respond")
             sleep(0.001)
@@ -116,6 +123,7 @@ cdef class SPI:
 
         self.wait_ready()
 
+        self.pin_cs.off()
         memset(&tr, 0, sizeof(tr))
 
         # set up our transmit and receive buffers
@@ -134,6 +142,7 @@ cdef class SPI:
 
         #print('r:', ','.join(hex(x) for x in read_buf))
 
+        self.pin_cs.on()
         if result < 1:
             raise IOError("spi transfer failed with result {}".format(result))
 
